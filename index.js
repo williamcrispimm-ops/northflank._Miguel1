@@ -5,7 +5,7 @@ import fetch from 'node-fetch';
 const app = express();
 app.use(express.json());
 
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 3000;
 const SERVICE_NAME = process.env.SERVICE_NAME || 'miguel-core';
 const APP_VERSION = process.env.APP_VERSION || '1.0.0';
 const N8N_SISTEMA_URL = process.env.N8N_SISTEMA_URL || '';
