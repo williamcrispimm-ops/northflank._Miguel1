@@ -1,9 +1,14 @@
-FROM node:20-alpine
+FROM node:18-alpine
+
 WORKDIR /app
 COPY package*.json ./
-RUN RUN npm ci --only=production || npm install --omit=dev
+RUN npm install --production
 COPY . .
-ENV NODE_ENV=production PORT=3000
-EXPOSE 3000
-HEALTHCHECK --interval=30s --timeout=3s --start-period=20s   CMD wget -qO- http://127.0.0.1:3000/healthz || exit 1
+
+ENV PORT=8080
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://localhost:8080/alive || exit 1
+
 CMD ["node", "index.js"]
