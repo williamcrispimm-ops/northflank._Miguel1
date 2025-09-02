@@ -1,1 +1,15 @@
-.github/workflws/flush.yml
+name: Flush R2 Cache
+
+on:
+  schedule:
+    - cron: "0 10 * * *"   # 07:00 BRT (10:00 UTC)
+  workflow_dispatch:        # permite rodar manualmente pelo GitHub
+
+jobs:
+  flush:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Chamar /flush no Core (Northflank)
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST "https://<SEU-CORE>.code.run/flush"
