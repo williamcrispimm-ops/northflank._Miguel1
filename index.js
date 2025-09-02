@@ -25,7 +25,6 @@ const N8N_USUARIO_URL = process.env.N8N_USUARIO_URL || ''; // ex: https://seu-n8
 // Janela de sono
 const TZ = process.env.TIMEZONE || 'America/Sao_Paulo';
 const SLEEP_START = process.env.SLEEP_START || '02:00';
-the
 const SLEEP_END   = process.env.SLEEP_END   || '07:00';
 
 // Cloudflare R2
@@ -184,7 +183,7 @@ app.get('/status', (_req, res) =>
 app.get('/r1/status', (_req, res) => res.json({ ok: true, msg: 'r1 up' }));
 
 app.post('/r1/sync', async (req, res) => {
-  if (!N8N_SISTEMA_URL) {
+  if (!NBN_SISTEMA_URL) {
     return res.status(400).json({ ok: false, error: 'N8N_SISTEMA_URL vazio' });
   }
   const chatId = getChatIdFromPayload(req.body);
