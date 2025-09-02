@@ -1,3 +1,4 @@
+// index.js (ESM)
 import express from 'express';
 import crypto from 'node:crypto';
 import fetch from 'node-fetch';
@@ -12,28 +13,34 @@ import {
 const app = express();
 app.use(express.json());
 
-// ---------- ENV ----------
+// ===== ENV =====
 const PORT = process.env.PORT || 3000;
 const SERVICE_NAME = process.env.SERVICE_NAME || 'miguel-core';
 const APP_VERSION = process.env.APP_VERSION || '1.0.0';
 
-const N8N_SISTEMA_URL = process.env.N8N_SISTEMA_URL || '';  // R1
-const N8N_USUARIO_URL = process.env.N8N_USUARIO_URL || '';  // R2
+// Webhooks do n8n no Render (links completos!)
+const N8N_SISTEMA_URL = process.env.N8N_SISTEMA_URL || ''; // ex: https://seu-n8n.onrender.com/webhook/sync
+const N8N_USUARIO_URL = process.env.N8N_USUARIO_URL || ''; // ex: https://seu-n8n.onrender.com/webhook/export
 
+// Janela de sono
+const TZ = process.env.TIMEZONE || 'America/Sao_Paulo';
+const SLEEP_START = process.env.SLEEP_START || '02:00';
+the
+const SLEEP_END   = process.env.SLEEP_END   || '07:00';
+
+// Cloudflare R2
 const R2_ENDPOINT = process.env.R2_ENDPOINT || '';
 const R2_BUCKET = process.env.R2_BUCKET || '';
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || '';
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY || '';
 
-const TZ = process.env.TIMEZONE || 'America/Sao_Paulo';
-const SLEEP_START = process.env.SLEEP_START || '02:00';
-const SLEEP_END   = process.env.SLEEP_END   || '07:00';
-
-// opcional: avisos por Telegram
+// Aviso opcional por Telegram (frase de dormindo / bom dia)
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN || '';
+// Se quiser forçar um chat fixo pra logs, preencha TG_CHAT_ID.
+// Caso contrário, o código tenta extrair do payload do Telegram.
 const TG_CHAT_ID   = process.env.TG_CHAT_ID || '';
 
-// ---------- R2 CLIENT ----------
+// ===== R2 Client =====
 const s3 =
   R2_ENDPOINT && R2_BUCKET
     ? new S3Client({
@@ -46,9 +53,9 @@ const s3 =
       })
     : null;
 
-// ---------- HELPERS ----------
+// ===== Helpers =====
 const toMinutes = (hhmm) => {
-  const [h, m] = hhmm.split(':').map((v) => parseInt(v, 10));
+  const [h, m] = (hhmm || '00:00').split(':').map((v) => parseInt(v, 10));
   return h * 60 + m;
 };
 
@@ -67,17 +74,27 @@ function isSleeping() {
   const start = toMinutes(SLEEP_START);
   const end = toMinutes(SLEEP_END);
   const now = nowMinutesInTZ();
-  // janela pode atravessar meia-noite (ex.: 22:00–06:00)
+  // suporta janela que cruza meia-noite (start > end)
   return start <= end ? now >= start && now < end : now >= start || now < end;
 }
 
-async function sendTelegram(msg) {
-  if (!TG_BOT_TOKEN || !TG_CHAT_ID) return;
+function getChatIdFromPayload(payload) {
+  return (
+    payload?.chat_id ||
+    payload?.message?.chat?.id ||
+    payload?.callback_query?.message?.chat?.id ||
+    TG_CHAT_ID ||
+    null
+  );
+}
+
+async function sendTG(chatId, text) {
+  if (!TG_BOT_TOKEN || !chatId) return;
   try {
     await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: TG_CHAT_ID, text: msg }),
+      body: JSON.stringify({ chat_id: chatId, text }),
     });
   } catch {}
 }
@@ -132,7 +149,6 @@ async function flushQueue(prefix = 'queue/') {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(payload),
         });
-
         if (!r.ok) throw new Error(`POST ${webhookUrl} -> ${r.status}`);
 
         await s3.send(
@@ -149,55 +165,42 @@ async function flushQueue(prefix = 'queue/') {
   return results;
 }
 
-// ---------- ROTAS BÁSICAS ----------
+// ===== Rotas básicas =====
 app.get('/alive', (_req, res) => res.send('ok'));
 app.get('/healthz', (_req, res) => res.json({ status: 'ok' }));
 app.get('/status', (_req, res) =>
   res.json({
     ok: true,
-    name: SERVICE_NAME,
+    service: SERVICE_NAME,
     version: APP_VERSION,
-    uptime: Math.round(process.uptime()),
     node: process.version,
-    sleep: {
-      active: isSleeping(),
-      start: SLEEP_START,
-      end: SLEEP_END,
-      tz: TZ,
-    },
-    timestamp: new Date().toISOString(),
+    uptime_sec: Math.round(process.uptime()),
+    sleep: { active: isSleeping(), start: SLEEP_START, end: SLEEP_END, tz: TZ },
+    ts: new Date().toISOString(),
   })
 );
 
-// ---------- BLOCO R1 ----------
-app.get('/r1/status', (_req, res) =>
-  res.json({ ok: true, msg: 'r1 up' })
-);
+// ===== R1 (sistema) =====
+app.get('/r1/status', (_req, res) => res.json({ ok: true, msg: 'r1 up' }));
 
 app.post('/r1/sync', async (req, res) => {
   if (!N8N_SISTEMA_URL) {
     return res.status(400).json({ ok: false, error: 'N8N_SISTEMA_URL vazio' });
   }
+  const chatId = getChatIdFromPayload(req.body);
 
-  // dormindo? vai pro R2
   if (isSleeping()) {
     try {
-      const key = await cacheToR2('r1', `${N8N_SISTEMA_URL}/webhook/sync`, req.body);
-      await sendTelegram('🌙 Miguel dormindo: pedido de R1 guardado no cache.');
-      return res.json({
-        ok: true,
-        sleeping: true,
-        cachedKey: key,
-        msg: 'Estou dormindo agora, guardei sua mensagem e vou processar quando acordar.',
-      });
+      const key = await cacheToR2('r1', N8N_SISTEMA_URL, req.body);
+      await sendTG(chatId, '🌙 Estou dormindo agora, mas guardei sua mensagem. Quando acordar, volto com tudo 🚀');
+      return res.json({ ok: true, sleeping: true, cachedKey: key });
     } catch (e) {
       return res.status(500).json({ ok: false, sleeping: true, error: String(e) });
     }
   }
 
-  // acordado? envia pro n8n
   try {
-    const r = await fetch(`${N8N_SISTEMA_URL}/webhook/sync`, {
+    const r = await fetch(N8N_SISTEMA_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(req.body || {}),
@@ -209,33 +212,27 @@ app.post('/r1/sync', async (req, res) => {
   }
 });
 
-// ---------- BLOCO R2 ----------
-app.get('/r2/status', (_req, res) =>
-  res.json({ ok: true, msg: 'r2 up' })
-);
+// ===== R2 (usuário) =====
+app.get('/r2/status', (_req, res) => res.json({ ok: true, msg: 'r2 up' }));
 
 app.post('/r2/export', async (req, res) => {
   if (!N8N_USUARIO_URL) {
     return res.status(400).json({ ok: false, error: 'N8N_USUARIO_URL vazio' });
   }
+  const chatId = getChatIdFromPayload(req.body);
 
   if (isSleeping()) {
     try {
-      const key = await cacheToR2('r2', `${N8N_USUARIO_URL}/webhook/export`, req.body);
-      await sendTelegram('🌙 Miguel dormindo: pedido de R2 guardado no cache.');
-      return res.json({
-        ok: true,
-        sleeping: true,
-        cachedKey: key,
-        msg: 'Estou dormindo agora, guardei sua mensagem e vou processar quando acordar.',
-      });
+      const key = await cacheToR2('r2', N8N_USUARIO_URL, req.body);
+      await sendTG(chatId, '🌙 Estou dormindo agora, mas guardei sua mensagem. Quando acordar, volto com tudo 🚀');
+      return res.json({ ok: true, sleeping: true, cachedKey: key });
     } catch (e) {
       return res.status(500).json({ ok: false, sleeping: true, error: String(e) });
     }
   }
 
   try {
-    const r = await fetch(`${N8N_USUARIO_URL}/webhook/export`, {
+    const r = await fetch(N8N_USUARIO_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(req.body || {}),
@@ -247,16 +244,21 @@ app.post('/r2/export', async (req, res) => {
   }
 });
 
-// ---------- FLUSH MANUAL (chamar ao acordar, ou via cron) ----------
+// ===== FLUSH (chame às 07:00) =====
 app.post('/flush', async (_req, res) => {
   try {
     const result = await flushQueue('queue/');
+    // opcional: mandar um "bom dia" genérico
+    if (TG_BOT_TOKEN && TG_CHAT_ID) {
+      await sendTG(TG_CHAT_ID, '☀️ Bom dia! Reprocessamento da madrugada concluído.');
+    }
     res.json({ ok: true, flushed: result });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) });
   }
 });
 
-// ---------- ROOT ----------
+// root
 app.get('/', (_req, res) => res.send('Miguel Core — Alive + R1 + R2'));
+
 app.listen(PORT, () => console.log(`Core listening on :${PORT}`));
